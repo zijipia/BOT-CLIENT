@@ -172,6 +172,14 @@ export default function App() {
           }
         } else if (msg.type === 'GATEWAY_PING') {
           setBotStatus((prev) => ({ ...prev, pingMs: msg.pingMs }));
+        } else if (msg.type === 'GATEWAY_VOICE_LOG') {
+          console.log('[Frontend Voice Log]', msg);
+          if (msg.status === 'SKIPPED_OPCODE') {
+            setGatewayVoiceState((prev) => ({
+              ...prev,
+              message: msg.message || 'Tự động bỏ qua Opcode không khả thi. Duy trì trạng thái Voice phòng.',
+            }));
+          }
         } else if (msg.type === 'DISCORD_EVENT') {
           handleDiscordGatewayEvent(msg.eventName, msg.data);
         }

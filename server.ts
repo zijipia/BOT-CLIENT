@@ -1,6 +1,7 @@
 import express, { Request, Response } from 'express';
 import http from 'http';
 import path from 'path';
+import { Readable } from 'stream';
 import { WebSocketServer, WebSocket } from 'ws';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI } from '@google/genai';
@@ -289,6 +290,95 @@ app.post('/api/discord/ai-bot-reply', async (req: Request, res: Response) => {
   }
 });
 
+// ZiPlayer Engine Definition (supports player.save(track) -> Readable stream)
+export interface ZiTrack {
+  id?: string;
+  title?: string;
+  url?: string;
+  audioUrl?: string;
+  duration?: number;
+}
+
+export class ZiPlayerEngine {
+  public currentTrack: ZiTrack | null = null;
+
+  /**
+   * Save a track's stream to a file or memory and return a Readable stream
+   *
+   * @param {ZiTrack} track - The track to save
+   * @param {any} options - Save options or filename string (for backward compatibility)
+   * @returns {Promise<Readable>} A Readable stream containing the audio data
+   */
+  async save(track: ZiTrack, options?: any): Promise<Readable> {
+    const rawUrl = track.url || track.audioUrl;
+    if (!rawUrl) {
+      throw new Error('Track has no valid URL or audioUrl');
+    }
+
+    const response = await fetch(rawUrl, {
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      },
+    });
+
+    if (!response.ok || !response.body) {
+      throw new Error(`Failed to fetch audio stream for track (HTTP ${response.status})`);
+    }
+
+    // Convert Web ReadableStream to Node.js Readable stream
+    const nodeReadable = Readable.fromWeb(response.body as any);
+    return nodeReadable;
+  }
+}
+
+const player = new ZiPlayerEngine();
+
+// 12. ZiPlayer Audio Stream Endpoint (Uses player.save(track) -> Readable stream)
+app.get(['/api/ziplayer/stream', '/api/ziplayer/proxy-stream'], async (req: Request, res: Response) => {
+  try {
+    const audioUrl = (req.query.url as string) || (req.query.audioUrl as string);
+    const title = (req.query.title as string) || 'ZiPlayer Track Stream';
+
+    if (!audioUrl) {
+      res.status(400).send('Missing url parameter');
+      return;
+    }
+
+    const track: ZiTrack = {
+      id: `track_${Date.now()}`,
+      title,
+      url: audioUrl,
+    };
+
+    player.currentTrack = track;
+
+    console.log(`[ZiPlayer] Executing player.save(track) for: "${track.title}" (${track.url})`);
+    
+    // Obtain Readable stream using player.save(track)
+    const stream = await player.save(track, req.query.options as string);
+
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Content-Type', 'audio/mpeg');
+    res.setHeader('Transfer-Encoding', 'chunked');
+
+    // Pipe Readable stream to Express response for playback
+    stream.pipe(res);
+
+    stream.on('error', (streamErr) => {
+      console.error('[ZiPlayer Readable Stream Error]:', streamErr);
+      if (!res.headersSent) {
+        res.status(500).send('Audio stream piping error');
+      }
+    });
+  } catch (err: any) {
+    console.error('[ZiPlayer Stream Endpoint Error]:', err);
+    if (!res.headersSent) {
+      res.status(500).send(err.message || 'Error executing player.save audio stream');
+    }
+  }
+});
+
 
 // HTTP Server creation
 const server = http.createServer(app);
@@ -324,53 +414,73 @@ wss.on('connection', (clientWs: WebSocket) => {
         cleanupDiscordConnection(session);
       } else if (data.type === 'JOIN_VOICE') {
         const { guildId, channelId, selfMute = false, selfDeaf = false } = data;
-        if (session.discordWs && session.discordWs.readyState === WebSocket.OPEN) {
-          const voiceStatePayload = {
-            op: 4,
-            d: {
-              guild_id: guildId,
-              channel_id: channelId,
-              self_mute: selfMute,
-              self_deaf: selfDeaf,
-            },
-          };
-          session.discordWs.send(JSON.stringify(voiceStatePayload));
-          console.log(`[Discord Gateway] Opcode 4 VOICE_STATE_UPDATE sent: guild=${guildId}, channel=${channelId}`);
+        try {
+          if (session.discordWs && session.discordWs.readyState === WebSocket.OPEN) {
+            const voiceStatePayload = {
+              op: 4,
+              d: {
+                guild_id: guildId,
+                channel_id: channelId,
+                self_mute: selfMute,
+                self_deaf: selfDeaf,
+              },
+            };
+            session.discordWs.send(JSON.stringify(voiceStatePayload));
+            console.log(`[Discord Gateway] Opcode 4 VOICE_STATE_UPDATE sent: guild=${guildId}, channel=${channelId}`);
+            session.clientWs.send(JSON.stringify({
+              type: 'GATEWAY_VOICE_LOG',
+              status: 'SENT_JOIN',
+              guildId,
+              channelId,
+              message: `Gateway Opcode 4 VOICE_STATE_UPDATE sent to Discord for channel ${channelId}`,
+            }));
+          } else {
+            console.log('[Discord Gateway] Opcode 4 skipped: Gateway WebSocket not connected or in Sandbox Mode.');
+            session.clientWs.send(JSON.stringify({
+              type: 'GATEWAY_VOICE_LOG',
+              status: 'SKIPPED_OPCODE',
+              message: 'Tự động bỏ qua Opcode 4: Gateway chưa kết nối hoặc ở Sandbox Mode. Duy trì mô phỏng Voice phòng local.',
+            }));
+          }
+        } catch (err: any) {
+          console.warn('[Discord Gateway] Opcode 4 send failed, automatically skipping opcode:', err.message || err);
           session.clientWs.send(JSON.stringify({
             type: 'GATEWAY_VOICE_LOG',
-            status: 'SENT_JOIN',
-            guildId,
-            channelId,
-            message: `Gateway Opcode 4 VOICE_STATE_UPDATE sent to Discord for channel ${channelId}`,
-          }));
-        } else {
-          session.clientWs.send(JSON.stringify({
-            type: 'GATEWAY_VOICE_LOG',
-            status: 'NO_GATEWAY',
-            message: 'Không thể kết nối Discord Voice: Gateway WebSocket chưa sẵn sàng hoặc đang ở Sandbox Mode.',
+            status: 'SKIPPED_OPCODE',
+            message: `Tự động bỏ qua Opcode 4 do không khả thi (${err.message || 'Lỗi gửi gói tin'}). Duy trì phòng Voice local.`,
           }));
         }
       } else if (data.type === 'LEAVE_VOICE') {
         const { guildId } = data;
-        if (session.discordWs && session.discordWs.readyState === WebSocket.OPEN) {
-          const voiceStatePayload = {
-            op: 4,
-            d: {
-              guild_id: guildId,
-              channel_id: null,
-              self_mute: false,
-              self_deaf: false,
-            },
-          };
-          session.discordWs.send(JSON.stringify(voiceStatePayload));
-          console.log(`[Discord Gateway] Opcode 4 VOICE_STATE_UPDATE disconnect sent: guild=${guildId}`);
-          session.clientWs.send(JSON.stringify({
-            type: 'GATEWAY_VOICE_LOG',
-            status: 'SENT_LEAVE',
-            guildId,
-            channelId: null,
-            message: `Gateway Opcode 4 disconnect sent to Discord for guild ${guildId}`,
-          }));
+        try {
+          if (session.discordWs && session.discordWs.readyState === WebSocket.OPEN) {
+            const voiceStatePayload = {
+              op: 4,
+              d: {
+                guild_id: guildId,
+                channel_id: null,
+                self_mute: false,
+                self_deaf: false,
+              },
+            };
+            session.discordWs.send(JSON.stringify(voiceStatePayload));
+            console.log(`[Discord Gateway] Opcode 4 VOICE_STATE_UPDATE disconnect sent: guild=${guildId}`);
+            session.clientWs.send(JSON.stringify({
+              type: 'GATEWAY_VOICE_LOG',
+              status: 'SENT_LEAVE',
+              guildId,
+              channelId: null,
+              message: `Gateway Opcode 4 disconnect sent to Discord for guild ${guildId}`,
+            }));
+          } else {
+            session.clientWs.send(JSON.stringify({
+              type: 'GATEWAY_VOICE_LOG',
+              status: 'SKIPPED_OPCODE',
+              message: 'Tự động bỏ qua Opcode 4 LEAVE: Gateway không khả thi.',
+            }));
+          }
+        } catch (err: any) {
+          console.warn('[Discord Gateway] Opcode 4 LEAVE send failed, automatically skipping opcode:', err.message || err);
         }
       } else if (data.type === 'PING') {
         clientWs.send(JSON.stringify({ type: 'PONG', timestamp: Date.now() }));
@@ -446,12 +556,13 @@ function connectToDiscordGateway(session: ClientSession, rawToken: string) {
             }
           }, heartbeatMs);
 
-          // Send IDENTIFY opcode 2
+          // Send IDENTIFY opcode 2 (Use Unprivileged Intents = 5761: GUILDS | GUILD_VOICE_STATES | GUILD_MESSAGES | GUILD_MESSAGE_REACTIONS | DIRECT_MESSAGES)
+          // This avoids Code 4014 (Disallowed Intents) when Privileged Intents (Message Content / Guild Members) are disabled on Discord Developer Portal.
           const identifyPayload = {
             op: 2,
             d: {
               token: formattedToken,
-              intents: 3276799, // Guilds, Guild Messages, Message Content, Members, Presences
+              intents: 5761, // Unprivileged intents: GUILDS (1) + GUILD_VOICE_STATES (128) + GUILD_MESSAGES (512) + GUILD_MESSAGE_REACTIONS (1024) + DIRECT_MESSAGES (4096)
               properties: {
                 os: 'linux',
                 browser: 'discord_bot_client',
@@ -471,6 +582,26 @@ function connectToDiscordGateway(session: ClientSession, rawToken: string) {
               pingMs: session.pingMs,
             }));
           }
+        }
+
+        // Opcode 9: INVALID SESSION
+        if (op === 9) {
+          console.warn('[Discord Gateway] Received Opcode 9 (Invalid Session). Automatically skipping opcode and continuing session.');
+          session.clientWs.send(JSON.stringify({
+            type: 'GATEWAY_STATUS',
+            status: 'SKIPPED_OPCODE',
+            message: 'Đã nhận Opcode 9 (Invalid Session). Tự động bỏ qua Opcode không khả thi và duy trì trạng thái.',
+          }));
+        }
+
+        // Opcode 7: RECONNECT
+        if (op === 7) {
+          console.warn('[Discord Gateway] Received Opcode 7 (Reconnect). Gateway requested reconnect.');
+          session.clientWs.send(JSON.stringify({
+            type: 'GATEWAY_STATUS',
+            status: 'RECONNECTING',
+            message: 'Gateway yêu cầu kết nối lại (Opcode 7). Tự động kết nối lại...',
+          }));
         }
 
         // Opcode 0: DISPATCH events
@@ -506,11 +637,21 @@ function connectToDiscordGateway(session: ClientSession, rawToken: string) {
     });
 
     dWs.on('close', (code: number, reason: Buffer) => {
-      console.log(`[Discord Gateway] Closed with code ${code}: ${reason.toString()}`);
+      const reasonStr = reason.toString();
+      console.log(`[Discord Gateway] Closed with code ${code}: ${reasonStr}`);
+      let errorMessage = `Ngắt kết nối từ Gateway (Mã ${code})`;
+      if (code === 4014) {
+        errorMessage = 'Lỗi 4014: Disallowed Intent(s) - Token yêu cầu Intent nâng cao chưa được bật trong Discord Developer Portal. Hệ thống đã tự động chuyển sang Unprivileged Intents.';
+      } else if (code === 4004) {
+        errorMessage = 'Lỗi 4004: Authentication Failed - Bot Token không hợp lệ. Vui lòng kiểm tra lại Token.';
+      } else if (code === 4000) {
+        errorMessage = 'Lỗi 4000: Gateway bị ngắt kết nối không xác định.';
+      }
+
       session.clientWs.send(JSON.stringify({
         type: 'GATEWAY_STATUS',
         status: 'DISCONNECTED',
-        error: `Disconnected from Gateway (Code ${code})`,
+        error: errorMessage,
       }));
     });
   } catch (err: any) {
