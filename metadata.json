@@ -1,0 +1,6 @@
+{
+  "name": "Discord Bot Client",
+  "description": "A full-featured Discord Client UI powered by Discord Bot Token, supporting real-time WebSocket Gateway chat, channel & guild management, message embeds, reactions, and interactive sandbox mode.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
