@@ -128,6 +128,8 @@ export interface BotStatusInfo {
   activeGuildsCount?: number;
 }
 
+export type BotConnectionStatus = BotStatusInfo;
+
 export interface GatewayEventData {
   type: string;
   payload: any;

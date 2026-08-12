@@ -43,20 +43,20 @@ const DEFAULT_PLAYLIST: Track[] = [
   {
     id: 't1',
     title: 'Lofi Chill Beats - Coffee & Rain',
-    artist: 'ZiPlayer Chillhop Engine',
+    artist: 'Lofi Girl',
     duration: 218,
     cover: 'https://images.unsplash.com/photo-1518609878373-06d740f60d8b?w=300&auto=format&fit=crop&q=80',
-    audioUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3',
+    audioUrl: 'Lofi Chill Beats Coffee Rain',
     genre: 'Lofi',
     tempo: 75,
   },
   {
     id: 't2',
     title: 'Midnight Synthwave Dreams',
-    artist: 'Neon Cyber Studio',
+    artist: 'Lofi Girl Synthwave',
     duration: 423,
     cover: 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=300&auto=format&fit=crop&q=80',
-    audioUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3',
+    audioUrl: 'Synthwave Radio Chill Cyberpunk Beats',
     genre: 'Synthwave',
     tempo: 110,
   },
@@ -66,7 +66,7 @@ const DEFAULT_PLAYLIST: Track[] = [
     artist: 'Acoustic Rain Studio',
     duration: 344,
     cover: 'https://images.unsplash.com/photo-1520523839897-bd0b52f945a0?w=300&auto=format&fit=crop&q=80',
-    audioUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3',
+    audioUrl: 'Vietnamese Chill Piano Solo',
     genre: 'Acoustic',
     tempo: 65,
   },
@@ -76,7 +76,7 @@ const DEFAULT_PLAYLIST: Track[] = [
     artist: 'Otaku Chillroom',
     duration: 302,
     cover: 'https://images.unsplash.com/photo-1534447677768-be436bb09401?w=300&auto=format&fit=crop&q=80',
-    audioUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-8.mp3',
+    audioUrl: 'Anime Study Gaming Lofi Beats',
     genre: 'Anime',
     tempo: 85,
   },
@@ -400,15 +400,10 @@ export const VoiceRoomOverlay: React.FC<VoiceRoomOverlayProps> = ({
   // Synchronize audio track URL when currentTrackIndex or playlist changes
   useEffect(() => {
     const audio = ziPlayerAudioRef.current;
-    if (!audio) return;
+    if (!audio || !currentTrack) return;
 
     const rawUrl = currentTrack.audioUrl;
-    let finalStreamUrl = rawUrl;
-
-    // Use player.save() audio stream endpoint to pipe Readable audio stream
-    if (rawUrl.startsWith('http://') || rawUrl.startsWith('https://')) {
-      finalStreamUrl = `/api/ziplayer/stream?url=${encodeURIComponent(rawUrl)}&title=${encodeURIComponent(currentTrack.title)}`;
-    }
+    const finalStreamUrl = `/api/ziplayer/stream?query=${encodeURIComponent(rawUrl)}&title=${encodeURIComponent(currentTrack.title)}`;
 
     audio.src = finalStreamUrl;
     audio.load();
@@ -430,7 +425,7 @@ export const VoiceRoomOverlay: React.FC<VoiceRoomOverlayProps> = ({
     }
 
     const audio = ziPlayerAudioRef.current;
-    if (!audio) return;
+    if (!audio || !currentTrack) return;
 
     if (isPlayingZiPlayer) {
       audio.pause();
@@ -440,7 +435,7 @@ export const VoiceRoomOverlay: React.FC<VoiceRoomOverlayProps> = ({
         setPlayerError(null);
         if (!audio.src || audio.src === window.location.href) {
           const rawUrl = currentTrack.audioUrl;
-          audio.src = `/api/ziplayer/stream?url=${encodeURIComponent(rawUrl)}&title=${encodeURIComponent(currentTrack.title)}`;
+          audio.src = `/api/ziplayer/stream?query=${encodeURIComponent(rawUrl)}&title=${encodeURIComponent(currentTrack.title)}`;
         }
         await audio.play();
         setIsPlayingZiPlayer(true);
@@ -476,13 +471,13 @@ export const VoiceRoomOverlay: React.FC<VoiceRoomOverlayProps> = ({
 
     const newSong: Track = {
       id: `custom_${Date.now()}`,
-      title: isDirectUrl ? `Custom Audio Stream (${new URL(inputUrl).hostname})` : inputUrl,
-      artist: 'User Requested Stream',
+      title: inputUrl.length > 40 ? `${inputUrl.substring(0, 37)}...` : inputUrl,
+      artist: 'Yêu cầu từ người dùng',
       duration: 240,
       cover: 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=300&auto=format&fit=crop&q=80',
-      audioUrl: isDirectUrl ? inputUrl : 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-4.mp3',
+      audioUrl: inputUrl,
       tempo: 90,
-      genre: 'Custom Stream',
+      genre: isDirectUrl ? 'Direct Link' : 'ZiPlayer Search',
     };
 
     setPlaylist((prev) => [...prev, newSong]);
