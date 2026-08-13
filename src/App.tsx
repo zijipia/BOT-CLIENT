@@ -689,6 +689,7 @@ export default function App() {
           setIsMuted={setIsMuted}
           isDeafened={isDeafened}
           setIsDeafened={setIsDeafened}
+          members={members}
         />
       ) : (
         <ChatArea

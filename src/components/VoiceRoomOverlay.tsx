@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { DiscordChannel, DiscordUser, BotConnectionStatus } from '../types';
+import { DiscordChannel, DiscordUser, BotConnectionStatus, DiscordMember } from '../types';
+import { VoicePlayer } from '../audio/VoicePlayer';
 import {
   Volume2,
   VolumeX,
@@ -98,7 +99,99 @@ interface VoiceRoomOverlayProps {
   setIsMuted: (muted: boolean) => void;
   isDeafened: boolean;
   setIsDeafened: (deafened: boolean) => void;
+  members: DiscordMember[];
 }
+
+interface VoiceUserCardProps {
+  userId: string;
+  member?: DiscordMember;
+  voicePlayer: VoicePlayer | null;
+}
+
+const VoiceUserCard: React.FC<VoiceUserCardProps> = ({ userId, member, voicePlayer }) => {
+  const [volume, setVolume] = useState(1.0);
+  const [muted, setMuted] = useState(false);
+
+  const handleVolumeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const v = parseFloat(e.target.value);
+    setVolume(v);
+    if (voicePlayer) {
+      voicePlayer.setVolume(userId, v);
+    }
+  };
+
+  const handleToggleMute = () => {
+    const nextMute = !muted;
+    setMuted(nextMute);
+    if (voicePlayer) {
+      voicePlayer.setMute(userId, nextMute);
+    }
+  };
+
+  const name = member?.nick || member?.user?.global_name || member?.user?.username || `User ${userId.substring(0, 6)}`;
+  const avatarUrl = member?.user?.avatar
+    ? `https://cdn.discordapp.com/avatars/${userId}/${member.user.avatar}.png`
+    : null;
+
+  return (
+    <div className="bg-[#1e1f22] border border-[#2b2d31] rounded-2xl p-4 flex flex-col items-center justify-center gap-3 relative shadow transition-all duration-200 hover:border-gray-700">
+      <div className="relative">
+        <div
+          className={`w-16 h-16 rounded-full bg-[#5865F2] flex items-center justify-center overflow-hidden border-2 transition-all duration-300 ${
+            !muted ? 'border-[#23a55a] shadow-[0_0_12px_rgba(35,165,90,0.4)] scale-105' : 'border-[#2b2d31]'
+          }`}
+        >
+          {avatarUrl ? (
+            <img src={avatarUrl} alt="" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+          ) : (
+            <span className="text-xl font-extrabold text-white">
+              {name[0].toUpperCase()}
+            </span>
+          )}
+        </div>
+
+        {muted && (
+          <div className="absolute bottom-0 right-0 p-1 bg-[#f23f43] rounded-full text-white border-2 border-[#1e1f22]">
+            <MicOff className="w-3.5 h-3.5" />
+          </div>
+        )}
+      </div>
+
+      <div className="text-center w-full min-w-0">
+        <span className="font-bold text-white text-xs block truncate" title={name}>
+          {name}
+        </span>
+        <span className="text-[9px] text-gray-400 font-mono block truncate">
+          ID: {userId}
+        </span>
+      </div>
+
+      {/* Volume & Mute Controls */}
+      <div className="w-full flex items-center gap-2 mt-1 px-1 bg-[#111214] rounded-lg py-1 border border-[#2b2d31]">
+        <button
+          onClick={handleToggleMute}
+          className={`p-1.5 rounded transition ${
+            muted ? 'bg-[#f23f43]/20 text-[#f23f43]' : 'text-gray-400 hover:text-white'
+          }`}
+        >
+          {muted ? <MicOff className="w-3.5 h-3.5" /> : <Mic className="w-3.5 h-3.5" />}
+        </button>
+        <input
+          type="range"
+          min="0"
+          max="2"
+          step="0.05"
+          value={volume}
+          onChange={handleVolumeChange}
+          className="flex-1 accent-[#5865F2] h-1 bg-[#2b2d31] rounded-lg appearance-none cursor-pointer"
+        />
+        <span className="text-[9px] font-mono text-gray-400 w-8 text-right">
+          {Math.round(volume * 100)}%
+        </span>
+      </div>
+    </div>
+  );
+};
 
 export const VoiceRoomOverlay: React.FC<VoiceRoomOverlayProps> = ({
   channel,
@@ -110,9 +203,12 @@ export const VoiceRoomOverlay: React.FC<VoiceRoomOverlayProps> = ({
   setIsMuted,
   isDeafened,
   setIsDeafened,
+  members = [],
 }) => {
   // Audio Input Source Mode State
   const [audioSource, setAudioSource] = useState<AudioSourceMode>('mic');
+
+
 
   // Mic Capture State
   const [isMicConnected, setIsMicConnected] = useState(false);
@@ -157,6 +253,49 @@ export const VoiceRoomOverlay: React.FC<VoiceRoomOverlayProps> = ({
   const animationFrameRef = useRef<number | null>(null);
 
   const currentTrack = playlist[currentTrackIndex] || DEFAULT_PLAYLIST[0];
+
+  // Client Voice Receiver (VoicePlayer) States
+  const [activeVoiceUsers, setActiveVoiceUsers] = useState<string[]>([]);
+  const voicePlayerRef = useRef<VoicePlayer | null>(null);
+
+  // Connect and clean up VoicePlayer
+  useEffect(() => {
+    if (!gatewayVoiceState?.confirmed || !audioCtxRef.current || !masterGainRef.current) {
+      if (voicePlayerRef.current) {
+        voicePlayerRef.current.destroy();
+        voicePlayerRef.current = null;
+        setActiveVoiceUsers([]);
+      }
+      return;
+    }
+
+    const ctx = audioCtxRef.current;
+    const dest = masterGainRef.current;
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const guildId = channel.guild_id || '';
+    const voiceWsUrl = `${protocol}//${window.location.host}/voice?guildId=${guildId}`;
+
+    console.log('[VoicePlayer] Connecting client voice receiver:', voiceWsUrl);
+    const player = new VoicePlayer(ctx, dest);
+    voicePlayerRef.current = player;
+
+    player.onUsersChange = (users) => {
+      console.log('[VoicePlayer] Active voice users changed:', users);
+      setActiveVoiceUsers(users);
+    };
+
+    player.connect(voiceWsUrl).catch((err) => {
+      console.error('[VoicePlayer] Connection to voice WS failed:', err);
+    });
+
+    return () => {
+      if (voicePlayerRef.current) {
+        voicePlayerRef.current.destroy();
+        voicePlayerRef.current = null;
+        setActiveVoiceUsers([]);
+      }
+    };
+  }, [gatewayVoiceState?.confirmed, audioCtxRef.current, masterGainRef.current, channel.guild_id]);
 
   // 1. Initialize Master Web Audio Engine & ZiPlayer HTML5 Audio Source
   const initAudioEngine = useCallback(() => {
@@ -644,7 +783,7 @@ export const VoiceRoomOverlay: React.FC<VoiceRoomOverlayProps> = ({
           </div>
 
           {/* User Cards Grid */}
-          <div className="grid grid-cols-2 gap-4 my-auto py-4">
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 my-auto py-4 overflow-y-auto max-h-[380px] pr-1">
             {/* User Card */}
             <div className="bg-[#1e1f22] border border-[#2b2d31] rounded-2xl p-4 flex flex-col items-center justify-center gap-3 relative shadow">
               <div className="relative">
@@ -742,6 +881,19 @@ export const VoiceRoomOverlay: React.FC<VoiceRoomOverlayProps> = ({
                 </span>
               </div>
             </div>
+
+            {/* Active Voice Speakers */}
+            {activeVoiceUsers.map((userId) => {
+              const member = members.find((m) => m.user.id === userId);
+              return (
+                <VoiceUserCard
+                  key={userId}
+                  userId={userId}
+                  member={member}
+                  voicePlayer={voicePlayerRef.current}
+                />
+              );
+            })}
           </div>
 
           {/* Bottom Receiver Spectrum & Volume Meter */}
